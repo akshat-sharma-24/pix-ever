@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables / secrets
+.env
+
+# PyInstaller output
+dist/
+build/
+*.spec
+
+# App-generated files (user data — never commit these)
+config.json
+*.db
+*.db-shm
+*.db-wal
