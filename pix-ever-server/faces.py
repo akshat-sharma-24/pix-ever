@@ -4,7 +4,7 @@ This module must stay importable with neither OpenCV nor numpy installed, and
 with no model files on disk. Two things depend on that:
 
   * the lean build target, which ships without OpenCV and simply has tagging
-    disabled (see README "Packaging"),
+    disabled (see "Packaging" in README.md),
   * tools/fetch_models.py, which has to run *before* any model exists.
 
 So the OpenCV-backed engine is imported lazily, not at module load.
