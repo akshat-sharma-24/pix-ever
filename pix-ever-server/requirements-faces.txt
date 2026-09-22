@@ -1,0 +1,15 @@
+# Face tagging extras — install on top of requirements.txt.
+#
+#   pip install -r requirements.txt -r requirements-faces.txt
+#   python tools/fetch_models.py
+#
+# Deliberately separate: the server runs, backs up photos and serves its API
+# with none of this installed, it just reports face tagging as unavailable.
+# That is what makes the lean build target in the README possible.
+#
+# Pinned exactly. OpenCV's FaceDetectorYN / FaceRecognizerSF / alignCrop are
+# the whole feature, and they are not covered by any compatibility promise.
+# Verified working on this pair; OpenCV 5 also emits a benign
+# "Targets are not supported by the new graph engine" warning at load.
+opencv-python-headless==5.0.0.93
+numpy==2.4.6

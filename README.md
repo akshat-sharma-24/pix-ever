@@ -10,6 +10,8 @@ This monorepo contains two distinct modules that work together:
 
 An ultra-lightweight, zero-telemetry Python/FastAPI backend. It runs on your computer or portable HDD, receives files over your local network, reads their EXIF data, and safely organizes them into human-readable folders (`YYYY/MM/Month_DD/`). It uses SQLite and SHA-256 hashing to guarantee zero duplicate files are saved.
 
+It can also **recognise people in your photos**, so you can search your backup by person — all on your own machine, with nothing uploaded anywhere. This is opt-in: skip the setup and the server behaves exactly as it always has. See [face-scan.md](./pix-ever-server/face-scan.md).
+
 ### 2. [PixEver Client](./pix_ever_client/README.md)
 
 A mobile companion app built with Flutter. It bypasses aggressive OS background task killers by putting you in control of exactly when and what to sync. It uses native OS gallery pickers and memory-efficient chunked hashing to securely stream large photos and 4K videos directly to your server without crashing your phone.
