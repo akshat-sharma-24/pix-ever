@@ -257,6 +257,12 @@ class FaceWorker:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._retag_wanted = False
+        # True when there may be photos not yet queued. Set on the first run
+        # (the whole existing library counts as new), by an upload, and by the
+        # periodic sweep. A plain bool rather than an Event because it must be
+        # readable mid-batch without disturbing the sleep handshake; assigning
+        # one is atomic, so no lock is needed.
+        self._new_files = True
         self._thread = None
 
     # -- control, called from request threads --
@@ -276,6 +282,7 @@ class FaceWorker:
 
     def nudge(self) -> None:
         """A new photo arrived."""
+        self._new_files = True
         self._wake.set()
 
     def request_retag(self) -> None:
@@ -337,6 +344,11 @@ class FaceWorker:
             if not did_work:
                 self._wake.wait(IDLE_SECONDS)
                 self._wake.clear()
+                # Look for new files whether that was a nudge or the timeout.
+                # The timeout is the backstop: a nudge landing in the instant
+                # between wait() returning and clear() is lost, and this is
+                # what stops that losing a photo for good.
+                self._new_files = True
         conn.close()
 
     def _tick(self, conn, engine) -> bool:
@@ -348,7 +360,13 @@ class FaceWorker:
                   f"{result['people']} people -> {result['tags']} tags")
             return True
 
-        enqueue_new(conn)
+        if self._new_files:
+            # Cleared before the scan, not after: an upload arriving while
+            # this runs sets the flag again and is picked up next tick rather
+            # than being swallowed.
+            self._new_files = False
+            enqueue_new(conn)
+
         batch = conn.execute(
             "SELECT s.file_hash, f.path FROM FaceScans s "
             "JOIN Files f ON f.hash = s.file_hash "
