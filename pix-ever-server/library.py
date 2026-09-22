@@ -8,8 +8,10 @@ import os
 
 try:
     import cv2
+    import numpy as np
 except ImportError:                    # lean build — thumbnails unavailable
     cv2 = None
+    np = None
 
 import faces
 
@@ -94,6 +96,32 @@ def thumbs_dir(storage_dir: str) -> str:
     return os.path.join(storage_dir, faces.PIXEVER_DIRNAME, "thumbs")
 
 
+def _decode_for_thumbnail(data: bytes, target: int):
+    """Decode only as many pixels as a `target`-px thumbnail actually needs.
+
+    A full decode of a 12 MP photo costs about 36 MB of pixel buffer to
+    produce a 256 px image; a quarter-scale decode costs 2 MB. That matters
+    here because a cold search result fires many of these at once, and they
+    run concurrently across the threadpool. Decode *time* improves much less
+    than the memory does — the JPEG entropy stream still has to be walked —
+    so this is mainly about peak memory.
+
+    Steps run most-reduced first and stop at the first result still at least
+    `target` across, so a small original falls back to a fuller decode instead
+    of being upscaled into a blurry thumbnail. EXIF rotation is applied at
+    every reduction level, and reduction works for JPEG, PNG and WebP alike.
+    """
+    buffer = np.frombuffer(data, np.uint8)
+    steps = (cv2.IMREAD_REDUCED_COLOR_4, cv2.IMREAD_REDUCED_COLOR_2, cv2.IMREAD_COLOR)
+    for flag in steps:
+        image = cv2.imdecode(buffer, flag)
+        if image is None:
+            return None                       # not a decodable image at all
+        if max(image.shape[:2]) >= target or flag == cv2.IMREAD_COLOR:
+            return image
+    return None
+
+
 def thumbnail(conn, storage_dir: str, file_hash: str):
     """Path to this photo's cached thumbnail, generating it if needed.
 
@@ -117,7 +145,14 @@ def thumbnail(conn, storage_dir: str, file_hash: str):
     source = os.path.join(storage_dir, row[0] or "")
     if not row[0] or not os.path.exists(source):
         return None
-    image = faces.read_image(source)      # applies EXIF rotation, as the grid needs
+    try:
+        # Read the bytes here rather than via cv2.imread: imread cannot open
+        # non-ASCII paths on Windows, which is where this runs.
+        with open(source, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    image = _decode_for_thumbnail(data, THUMB_SIZE)
     if image is None:
         return None
 
