@@ -17,8 +17,14 @@ dist/
 build/
 *.spec
 
+# Face models (~10 MB, fetched by tools/fetch_models.py)
+models/
+
 # App-generated files (user data — never commit these)
 config.json
 *.db
 *.db-shm
 *.db-wal
+
+# Test photos (real faces — never commit)
+test/testdata/

@@ -6,8 +6,15 @@ import datetime
 import json
 import tkinter as tk
 from tkinter import filedialog
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-import exifread 
+from typing import List
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Query
+from fastapi.responses import FileResponse
+import exifread
+import faces
+import db
+import people
+import face_worker
+import library
 
 app = FastAPI()
 
@@ -51,26 +58,161 @@ STORAGE_DIR = get_storage_dir()
 DB_FILE = os.path.join(STORAGE_DIR, "sync_registry.db")
 
 # --- 2. Database & API Logic ---
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Files (
-            hash TEXT PRIMARY KEY,
-            path TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# The schema lives in db.py — every table in one place. Files is unchanged.
+
+# The background scanner. None when tagging is unavailable, so every use of it
+# is guarded — the backup path must work with no models and no OpenCV.
+WORKER = None
 
 @app.on_event("startup")
 def startup_event():
-    init_db()
+    global WORKER
+    db.init(DB_FILE)
+    if faces.engine_available():
+        WORKER = face_worker.FaceWorker(DB_FILE, STORAGE_DIR)
+        WORKER.start()
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    if WORKER is not None:
+        WORKER.stop()
 
 @app.get("/ping")
 def ping():
     return {"status": "online", "version": "1.0"}
+
+# --- Face tagging availability ---
+# Tagging is optional and must never take the backup path down with it. The
+# two endpoints above keep working whatever this reports.
+
+@app.get("/faces/status")
+def faces_status():
+    """Always answers, whether or not tagging works — that is the point of it."""
+    state = faces.status()
+    if WORKER is not None:
+        state.update(WORKER.status())
+        if state["worker_error"]:
+            # The model guard tripped: embeddings on disk came from a different
+            # model. Report it as unavailable so clients stop offering tagging.
+            state["available"] = False
+            state["state"] = "model_changed"
+            state["detail"] = state["worker_error"]
+    return state
+
+
+def require_faces():
+    """Dependency for tagging endpoints: 503 unless tagging is available.
+
+    The 503 body is the same shape /faces/status returns, so a client can read
+    `state` and `detail` without a second request and without special-casing
+    the error. 503 rather than 500: nothing is broken, the feature is simply
+    not installed, and retrying after fetching the models will work.
+    """
+    state = faces.status()
+    if not state["available"]:
+        raise HTTPException(status_code=503, detail=state)
+    return state
+
+
+# --- People (enrolment) ---
+# Every route here depends on require_faces, so with no models installed they
+# all answer 503 while /upload and /check-hash carry on working.
+
+def get_engine():
+    """One FaceEngine per request. Loading the models costs ~50 ms."""
+    return faces.FaceEngine()
+
+
+@app.post("/people")
+async def create_person(name: str = Form(...),
+                        images: List[UploadFile] = File(...),
+                        _state=Depends(require_faces)):
+    payload = [(image.filename, await image.read()) for image in images]
+    conn = db.connect(DB_FILE)
+    try:
+        result = people.create(conn, get_engine(), STORAGE_DIR, name, payload)
+        if WORKER is not None:
+            # Their photos are already scanned; only the cheap half re-runs.
+            WORKER.request_retag()
+        return result
+    except people.EnrolmentError as e:
+        # 400: the photo or the name is the problem, and the message says how
+        # to fix it. Not 500 — nothing here is broken.
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/people")
+def list_people(_state=Depends(require_faces)):
+    conn = db.connect(DB_FILE)
+    try:
+        return {"people": people.list_all(conn)}
+    finally:
+        conn.close()
+
+
+@app.delete("/people/{person_id}")
+def delete_person(person_id: int, _state=Depends(require_faces)):
+    conn = db.connect(DB_FILE)
+    try:
+        removed = people.delete(conn, STORAGE_DIR, person_id)
+        if removed is None:
+            raise HTTPException(status_code=404,
+                                detail=f"No person with id {person_id}.")
+        if WORKER is not None:
+            # Their tags cascaded away, but a face they were winning may now
+            # belong to someone else, so re-match rather than just delete.
+            WORKER.request_retag()
+        return removed
+    finally:
+        conn.close()
+
+# --- Searching the tagged library ---
+
+@app.get("/search")
+def search(person: List[int] = Query(..., description="person id; repeat for AND"),
+           limit: int = Query(library.DEFAULT_LIMIT, ge=1, le=library.MAX_LIMIT),
+           offset: int = Query(0, ge=0),
+           _state=Depends(require_faces)):
+    """Photos containing EVERY person listed, newest first.
+
+        /search?person=1              photos of person 1
+        /search?person=1&person=3     photos with BOTH of them
+    """
+    conn = db.connect(DB_FILE)
+    try:
+        missing = library.unknown_people(conn, person)
+        if missing:
+            # Better than silently returning nothing: an id that does not
+            # exist is a bug in the caller, not an empty result.
+            raise HTTPException(
+                status_code=404,
+                detail=f"No person with id {', '.join(str(m) for m in missing)}.")
+        return library.search(conn, person, limit, offset)
+    finally:
+        conn.close()
+
+
+@app.get("/files/{file_hash}/thumbnail")
+def thumbnail(file_hash: str, _state=Depends(require_faces)):
+    """A small JPEG for the grid, generated once and cached on disk.
+
+    Immutable: the cache is keyed by the photo's content hash, so a client
+    may cache it forever. Different bytes mean a different hash.
+    """
+    conn = db.connect(DB_FILE)
+    try:
+        path = library.thumbnail(conn, STORAGE_DIR, file_hash)
+    finally:
+        conn.close()
+    if path is None:
+        raise HTTPException(status_code=404,
+                            detail=f"No thumbnail available for {file_hash}.")
+    return FileResponse(path, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
 
 from pydantic import BaseModel
 class HashCheckRequest(BaseModel):
@@ -135,7 +277,10 @@ async def upload_file(hash: str = Form(...), file: UploadFile = File(...)):
 
         cursor.execute("INSERT INTO Files (hash, path) VALUES (?, ?)", (hash, rel_path))
         conn.commit()
-        
+
+        if WORKER is not None:
+            WORKER.nudge()      # scanning happens off the request path
+
         return {"status": "success", "saved_path": rel_path}
 
     except Exception as e:
@@ -154,6 +299,11 @@ if __name__ == "__main__":
     print("="*50)
     print("🚀 PixEver Server is Running!")
     print(f"📁 Saving photos to: {STORAGE_DIR}")
+    if faces.models_available():
+        print(f"🙂 Face models found in: {faces.MODELS_DIR}")
+    else:
+        # Not fatal: backup works exactly as before, tagging is simply off.
+        print("🙂 Face tagging disabled — models missing. Run: python tools/fetch_models.py")
     print("="*50)
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
