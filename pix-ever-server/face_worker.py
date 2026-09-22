@@ -36,6 +36,11 @@ BATCH = 25
 # wakes the worker immediately, so this is only a backstop.
 IDLE_SECONDS = 30
 
+# Photos per transaction when re-tagging the whole library. Also the number of
+# hashes bound into one IN (...) query, so it must stay well under SQLite's
+# host-parameter limit (999 on older builds).
+RETAG_CHUNK = 500
+
 
 class ModelMismatch(RuntimeError):
     """The configured model is not the one the stored embeddings came from."""
@@ -154,19 +159,16 @@ def load_references(conn) -> dict:
     return enrolled
 
 
-def match_one(conn, file_hash: str, enrolled: dict, threshold: float) -> int:
-    """Recompute this photo's tags from its stored faces. Returns tags written.
+def _best_people(face_rows, enrolled: dict, threshold: float) -> dict:
+    """{person_id: (score, face_id)} for one photo, from [(face_id, blob)].
 
     Two rules:
       * one face maps to at most one person — the best-scoring person takes
         it, so two lookalike relatives can never both be tagged on one face;
       * one person gets at most one row per photo, at their best score.
-
-    Only `auto` tags are replaced, so a future manual correction survives.
     """
     best = {}
-    for face_id, blob in conn.execute(
-            "SELECT id, embedding FROM Faces WHERE file_hash = ?", (file_hash,)):
+    for face_id, blob in face_rows:
         embedding = faces.from_blob(blob)
         scores = {
             person_id: max(faces.cosine_similarity(embedding, ref) for ref in refs)
@@ -180,7 +182,11 @@ def match_one(conn, file_hash: str, enrolled: dict, threshold: float) -> int:
             continue
         if person_id not in best or score > best[person_id][0]:
             best[person_id] = (score, face_id)
+    return best
 
+
+def _write_tags(conn, file_hash: str, best: dict) -> int:
+    """Replace this photo's automatic tags. Manual corrections survive."""
     conn.execute("DELETE FROM FileTags WHERE file_hash = ? AND source = 'auto'",
                  (file_hash,))
     for person_id, (score, face_id) in best.items():
@@ -192,17 +198,45 @@ def match_one(conn, file_hash: str, enrolled: dict, threshold: float) -> int:
     return len(best)
 
 
+def match_one(conn, file_hash: str, enrolled: dict, threshold: float) -> int:
+    """Recompute one photo's tags from its stored faces. Returns tags written."""
+    face_rows = conn.execute(
+        "SELECT id, embedding FROM Faces WHERE file_hash = ?", (file_hash,)).fetchall()
+    return _write_tags(conn, file_hash, _best_people(face_rows, enrolled, threshold))
+
+
 def retag_all(conn, threshold: float = None) -> dict:
     """Rebuild every tag from stored faces. No image is reopened.
 
-    This is what runs after someone is enrolled or removed. On a library that
-    is already scanned it is seconds, because the expensive half is done.
+    Runs after someone is enrolled or removed. Committed in chunks rather than
+    as one transaction over the whole library: SQLite allows a single writer,
+    so a library-wide transaction would hold the write lock for as long as the
+    retag takes, and uploads arriving meanwhile would wait it out. Each chunk
+    also reads its faces in one query instead of one per photo.
+
+    The trade is that a search running during a retag can briefly see a mix of
+    old and new tags. That is harmless — tags are derived data and the final
+    state is the same — and far better than blocking the backup path.
     """
     threshold = faces.COSINE_THRESHOLD if threshold is None else threshold
     enrolled = load_references(conn)
     hashes = [r[0] for r in conn.execute("SELECT DISTINCT file_hash FROM Faces")]
-    tags = sum(match_one(conn, h, enrolled, threshold) for h in hashes)
-    conn.commit()
+
+    tags = 0
+    for start in range(0, len(hashes), RETAG_CHUNK):
+        chunk = hashes[start:start + RETAG_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        by_photo = {file_hash: [] for file_hash in chunk}
+        for file_hash, face_id, blob in conn.execute(
+                f"SELECT file_hash, id, embedding FROM Faces "
+                f"WHERE file_hash IN ({placeholders})", chunk):
+            by_photo[file_hash].append((face_id, blob))
+
+        for file_hash, face_rows in by_photo.items():
+            tags += _write_tags(conn, file_hash,
+                                _best_people(face_rows, enrolled, threshold))
+        conn.commit()          # lock released between chunks
+
     return {"photos": len(hashes), "tags": tags, "people": len(enrolled)}
 
 

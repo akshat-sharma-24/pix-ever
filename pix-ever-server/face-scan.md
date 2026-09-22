@@ -339,7 +339,8 @@ Each is set in code with its reasoning beside it; re-measure with
 | `COSINE_THRESHOLD` | 0.370 | similarity above which a face is accepted as a person |
 | `DOMINANCE_RATIO` | 0.80 | enrolment: the largest face wins only if the next is smaller than this |
 | `MAX_REFS` | 5 | reference photos per person |
-| `BATCH` / `IDLE_SECONDS` | 25 / 30 | photos per transaction; backstop sweep interval |
+| `BATCH` / `IDLE_SECONDS` | 25 / 30 | photos claimed per sweep; backstop sweep interval |
+| `RETAG_CHUNK` | 500 | photos per transaction when re-tagging the whole library |
 | `THUMB_SIZE` | 256 | longest side of a cached thumbnail |
 
 ---
