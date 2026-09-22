@@ -184,6 +184,45 @@ class ConnectionPragmas(unittest.TestCase):
             self.assertEqual(left, 0, f"{table} rows orphaned — cascade did not fire")
 
 
+def _server_source():
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server.py")
+    with open(path) as f:
+        return f.read()
+
+
+class RouteHandlersStayOffTheEventLoop(unittest.TestCase):
+    """Route handlers must be plain `def`, never `async def`.
+
+    Every handler in server.py does blocking work — SQLite, disk, model
+    inference. FastAPI runs a plain `def` handler in its threadpool but an
+    `async def` one directly on the event loop, where that work freezes every
+    other request. Measured with enrolment as `async def`: a five-photo
+    POST /people stalled an unrelated /ping by 357 ms.
+
+    Checked by parsing the source because importing server.py opens the
+    tkinter folder picker.
+    """
+
+    def test_no_route_handler_is_async(self):
+        import ast
+        tree = ast.parse(_server_source())
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "app"):
+                    offenders.append(node.name)
+        self.assertEqual(
+            offenders, [],
+            f"async route handlers block the event loop: {offenders}. "
+            f"Use a plain def and read uploads with image.file.read().")
+
+
 class BackupPathUsesSharedConnection(unittest.TestCase):
     """/upload and /check-hash must go through db.connect.
 

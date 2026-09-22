@@ -125,10 +125,14 @@ def get_engine():
 
 
 @app.post("/people")
-async def create_person(name: str = Form(...),
-                        images: List[UploadFile] = File(...),
-                        _state=Depends(require_faces)):
-    payload = [(image.filename, await image.read()) for image in images]
+def create_person(name: str = Form(...),
+                  images: List[UploadFile] = File(...),
+                  _state=Depends(require_faces)):
+    # Plain def, not async: this loads two ONNX models and then detects and
+    # embeds up to five photos. On the event loop that would freeze every
+    # other request for the duration; as a def, FastAPI runs it in its
+    # threadpool and uploads from a syncing phone keep flowing.
+    payload = [(image.filename, image.file.read()) for image in images]
     conn = db.connect(DB_FILE)
     try:
         result = people.create(conn, get_engine(), STORAGE_DIR, name, payload)
@@ -241,7 +245,10 @@ def get_creation_date(file_path: str) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(mtime)
 
 @app.post("/upload")
-async def upload_file(hash: str = Form(...), file: UploadFile = File(...)):
+def upload_file(hash: str = Form(...), file: UploadFile = File(...)):
+    # Plain def for the same reason as /people: this copies a whole photo to
+    # disk, reads EXIF and writes to SQLite. None of that is awaitable, so on
+    # the event loop it would block every other request.
     # db.connect, not raw sqlite3: this is the path that must not fail when
     # the scanner happens to be writing, and it is db.connect that sets the
     # busy timeout.
