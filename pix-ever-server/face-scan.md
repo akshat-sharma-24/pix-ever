@@ -131,7 +131,7 @@ never needs the path.
 |---|---|
 | `server.py` | HTTP only — routes, request/response shapes, error codes. No logic. |
 | `faces.py` | Models and face mechanics: the model registry, where models live, whether tagging is available, `FaceEngine` (detect → align → embed), and the dominance rule. |
-| `db.py` | The whole schema in one place, plus `connect()` with the two pragmas the schema needs. |
+| `db.py` | The whole schema in one place, plus `connect()` with the pragmas the database depends on. |
 | `people.py` | Enrolment: create, list, delete a person; storing reference images and embeddings. |
 | `face_worker.py` | The background thread: queueing, scanning, matching, re-tagging, and the model guard. |
 | `library.py` | Reading the library for a client: the search query and thumbnail generation/caching. |
