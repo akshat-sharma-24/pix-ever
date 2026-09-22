@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS FileTags (
 CREATE INDEX IF NOT EXISTS idx_faces_file  ON Faces(file_hash);
 CREATE INDEX IF NOT EXISTS idx_tags_person ON FileTags(person_id);
 CREATE INDEX IF NOT EXISTS idx_refs_person ON PersonRefs(person_id);
+
+-- The worker claims work with "WHERE status = 'pending' LIMIT 25", and the
+-- rows it has already finished sit at the front of the table. Without this
+-- the claim scans past every completed row to reach the next pending one, so
+-- it slows down as the backfill advances and worsens with library size. It
+-- also turns the GROUP BY status behind /faces/status, which the client
+-- polls, into an index scan.
+CREATE INDEX IF NOT EXISTS idx_facescans_status ON FaceScans(status);
 """
 
 
