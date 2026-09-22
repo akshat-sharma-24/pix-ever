@@ -150,6 +150,9 @@ def scan_one(conn, engine, storage_dir: str, file_hash: str, rel_path: str) -> s
 def load_references(conn) -> dict:
     """{person_id: [embedding]} — every enrolled reference, kept separate.
 
+    The single place references are loaded for matching. Keep it that way:
+    a second copy elsewhere would drift from this one silently.
+
     Separate, never averaged: reference photos span years and angles, and a
     person matches when *one* of them matches, not when a blurred average does.
     """

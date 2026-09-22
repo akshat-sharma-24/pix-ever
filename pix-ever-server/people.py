@@ -120,15 +120,6 @@ def list_all(conn: sqlite3.Connection) -> list:
              "references": r[3], "photos": r[4]} for r in rows]
 
 
-def get_references(conn: sqlite3.Connection) -> dict:
-    """{person_id: [embedding]} for matching. Used by the scanner."""
-    enrolled = {}
-    for person_id, blob in conn.execute(
-            "SELECT person_id, embedding FROM PersonRefs"):
-        enrolled.setdefault(person_id, []).append(faces.from_blob(blob))
-    return enrolled
-
-
 def delete(conn: sqlite3.Connection, storage_dir: str, person_id: int) -> dict:
     """Remove a person, their references and their tags. None if not found.
 
