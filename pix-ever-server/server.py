@@ -220,7 +220,7 @@ class HashCheckRequest(BaseModel):
 
 @app.post("/check-hash")
 def check_hash(req: HashCheckRequest):
-    conn = sqlite3.connect(DB_FILE)
+    conn = db.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM Files WHERE hash = ?", (req.hash,))
     exists = cursor.fetchone() is not None
@@ -242,7 +242,10 @@ def get_creation_date(file_path: str) -> datetime.datetime:
 
 @app.post("/upload")
 async def upload_file(hash: str = Form(...), file: UploadFile = File(...)):
-    conn = sqlite3.connect(DB_FILE)
+    # db.connect, not raw sqlite3: this is the path that must not fail when
+    # the scanner happens to be writing, and it is db.connect that sets the
+    # busy timeout.
+    conn = db.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT path FROM Files WHERE hash = ?", (hash,))
     existing = cursor.fetchone()

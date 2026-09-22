@@ -327,5 +327,14 @@ class FaceWorker:
                 break
             if scan_one(conn, engine, self.storage_dir, file_hash, rel_path) == "done":
                 match_one(conn, file_hash, enrolled, faces.COSINE_THRESHOLD)
-        conn.commit()
+            # Commit per photo, NOT per batch. SQLite allows one writer at a
+            # time even in WAL, and a write transaction stays open from the
+            # first INSERT until commit. Committing once per batch would hold
+            # that lock across 25 photos' worth of decode, detect and embed —
+            # seconds during which an upload cannot write its Files row, and
+            # eventually long enough to exceed its busy timeout and fail. The
+            # expensive work happens before the first write of each photo, so
+            # per-photo commits keep the lock held for milliseconds. The extra
+            # syncs are nothing next to the inference they sit between.
+            conn.commit()
         return True

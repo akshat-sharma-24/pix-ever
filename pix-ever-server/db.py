@@ -89,10 +89,18 @@ def connect(db_file: str) -> sqlite3.Connection:
 
     WAL lets the background scanner write while request handlers read, instead
     of the two blocking each other.
+
+    busy_timeout covers the case WAL does not: WAL permits many readers but
+    still only ONE writer, so an upload and the scanner can genuinely collide
+    on a write. Without a timeout the loser raises "database is locked"
+    immediately; with one it waits its turn. Writes are kept short (the
+    scanner commits per photo) so the wait is milliseconds, and this is the
+    backstop for a slow disk rather than the primary defence.
     """
     conn = sqlite3.connect(db_file)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 

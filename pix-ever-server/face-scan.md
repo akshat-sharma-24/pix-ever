@@ -87,7 +87,10 @@ wake up  (on a nudge, or every 30s as a backstop)
         │
         ├─ match each face against every PersonRefs row
         ├─ INSERT INTO FileTags     one row per (photo, person)
-        └─ UPDATE FaceScans         status = done
+        ├─ UPDATE FaceScans         status = done
+        └─ COMMIT                   per photo, NOT per batch — SQLite allows
+                                    one writer, so a batch-wide transaction
+                                    would block uploads for seconds
 ```
 
 The two halves have wildly different costs, and the whole design follows from
@@ -134,6 +137,7 @@ never needs the path.
 | `library.py` | Reading the library for a client: the search query and thumbnail generation/caching. |
 | `tools/fetch_models.py` | Downloads the two `.onnx` models into `models/`, verifying size and SHA-256. Standard library only. |
 | `test/compare_faces.py` | Offline accuracy/speed harness. Not used by the server; imports nothing from it; writes nothing. |
+| `test/test_regressions.py` | Deterministic tests, one per bug found in review. `python -m unittest discover -s test` |
 
 Two structural notes:
 
@@ -235,14 +239,17 @@ differs from this while `Faces` has rows, tagging is disabled with a clear
 error rather than silently mixing them. Switching models before anything has
 been scanned is allowed.
 
-### Two pragmas the schema depends on
+### Three pragmas the database depends on
 
-`db.connect()` sets both, on every connection:
+`db.connect()` sets all three, on every connection:
 
 - **`foreign_keys = ON`** — SQLite disables these *by default, per connection*.
   Without it every `ON DELETE CASCADE` above is silently inert and deleting a
   person would orphan their references and tags while appearing to succeed.
 - **`journal_mode = WAL`** — lets the worker write while request handlers read.
+- **`busy_timeout = 10000`** — WAL still allows only one *writer*, so an upload
+  and the scanner can genuinely collide. Without a timeout the loser raises
+  `database is locked` immediately; with one it waits its turn.
 
 ---
 
